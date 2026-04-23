@@ -1,0 +1,83 @@
+services:
+  redis:
+    image: ${REDIS_IMAGE}
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    networks:
+      - app_net
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    cpus: "${REDIS_CPUS}"
+    mem_limit: ${REDIS_MEM_LIMIT}
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    image: ${API_IMAGE}
+    environment:
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_PORT}:${API_CONTAINER_PORT}"
+    restart: unless-stopped
+    networks:
+      - app_net
+    cpus: "${API_CPUS}"
+    mem_limit: ${API_MEM_LIMIT}
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    image: ${WORKER_IMAGE}
+    environment:
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app_net
+    cpus: "${WORKER_CPUS}"
+    mem_limit: ${WORKER_MEM_LIMIT}
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ${FRONTEND_IMAGE}
+    environment:
+      API_URL: ${API_URL}
+      FRONTEND_HOST: ${FRONTEND_HOST}
+      FRONTEND_PORT: ${FRONTEND_PORT}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_HOST_PORT}:${FRONTEND_CONTAINER_PORT}"
+    restart: unless-stopped
+    networks:
+      - app_net
+    cpus: "${FRONTEND_CPUS}"
+    mem_limit: ${FRONTEND_MEM_LIMIT}
+
+networks:
+  app_net:
+    name: ${COMPOSE_NETWORK_NAME}
+    internal: false
+
+volumes:
+  redis_data:
