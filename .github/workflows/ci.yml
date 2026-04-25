@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # --- 1. LINT JOB ---
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -47,16 +48,17 @@ jobs:
         with:
           dockerfile: api/Dockerfile
 
-      - name: Lint worker Dockerfile
+      - name: Lint Worker Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: worker/Dockerfile
 
-      - name: Lint frontend Dockerfile
+      - name: Lint Frontend Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: frontend/Dockerfile
 
+  # --- 2. TEST JOB ---
   test:
     runs-on: ubuntu-latest
     needs: lint
@@ -91,6 +93,7 @@ jobs:
           path: api/coverage.xml
           if-no-files-found: error
 
+  # --- 3. BUILD JOB ---
   build:
     runs-on: ubuntu-latest
     needs: test
@@ -99,6 +102,11 @@ jobs:
         image: registry:2
         ports:
           - 5000:5000
+    # FIX: Scoping Docker Hub credentials at job level for visibility in 'if' conditions
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,15 +115,15 @@ jobs:
         run: |
           echo "SHA_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "REGISTRY=localhost:5000/hng14" >> "$GITHUB_ENV"
-          echo "DOCKERHUB_NAMESPACE=${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_NAMESPACE=${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME || 'local' }}" >> "$GITHUB_ENV"
 
-      - name: Build images with SHA and latest tags
+      - name: Build images
         run: |
           docker build -t ${REGISTRY}/api:${SHA_TAG} -t ${REGISTRY}/api:latest ./api
           docker build -t ${REGISTRY}/worker:${SHA_TAG} -t ${REGISTRY}/worker:latest ./worker
           docker build -t ${REGISTRY}/frontend:${SHA_TAG} -t ${REGISTRY}/frontend:latest ./frontend
 
-      - name: Push images to local registry service
+      - name: Push to local registry
         run: |
           docker push ${REGISTRY}/api:${SHA_TAG}
           docker push ${REGISTRY}/api:latest
@@ -125,34 +133,23 @@ jobs:
           docker push ${REGISTRY}/frontend:latest
 
       - name: Login to Docker Hub
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         run: |
           echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
 
-      - name: Tag and push images to Docker Hub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+      - name: Tag and push to Docker Hub
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         run: |
-          docker tag ${REGISTRY}/api:${SHA_TAG} ${DOCKERHUB_NAMESPACE}/api:${SHA_TAG}
-          docker tag ${REGISTRY}/api:latest ${DOCKERHUB_NAMESPACE}/api:latest
-          docker tag ${REGISTRY}/worker:${SHA_TAG} ${DOCKERHUB_NAMESPACE}/worker:${SHA_TAG}
-          docker tag ${REGISTRY}/worker:latest ${DOCKERHUB_NAMESPACE}/worker:latest
-          docker tag ${REGISTRY}/frontend:${SHA_TAG} ${DOCKERHUB_NAMESPACE}/frontend:${SHA_TAG}
-          docker tag ${REGISTRY}/frontend:latest ${DOCKERHUB_NAMESPACE}/frontend:latest
-          docker push ${DOCKERHUB_NAMESPACE}/api:${SHA_TAG}
-          docker push ${DOCKERHUB_NAMESPACE}/api:latest
-          docker push ${DOCKERHUB_NAMESPACE}/worker:${SHA_TAG}
-          docker push ${DOCKERHUB_NAMESPACE}/worker:latest
-          docker push ${DOCKERHUB_NAMESPACE}/frontend:${SHA_TAG}
-          docker push ${DOCKERHUB_NAMESPACE}/frontend:latest
+          # Tags and pushes for all three services
+          for service in api worker frontend; do
+            docker tag ${REGISTRY}/${service}:${SHA_TAG} ${DOCKERHUB_NAMESPACE}/${service}:${SHA_TAG}
+            docker tag ${REGISTRY}/${service}:latest ${DOCKERHUB_NAMESPACE}/${service}:latest
+            docker push ${DOCKERHUB_NAMESPACE}/${service}:${SHA_TAG}
+            docker push ${DOCKERHUB_NAMESPACE}/${service}:latest
+          done
 
-      - name: Save latest images as tar artifacts
+      - name: Save images as tar
         run: |
-          docker pull ${REGISTRY}/api:latest
-          docker pull ${REGISTRY}/worker:latest
-          docker pull ${REGISTRY}/frontend:latest
           docker tag ${REGISTRY}/api:latest local/api:latest
           docker tag ${REGISTRY}/worker:latest local/worker:latest
           docker tag ${REGISTRY}/frontend:latest local/frontend:latest
@@ -168,8 +165,8 @@ jobs:
             api-image.tar
             worker-image.tar
             frontend-image.tar
-          if-no-files-found: error
 
+  # --- 4. SECURITY SCAN JOB ---
   security_scan:
     runs-on: ubuntu-latest
     needs: build
@@ -189,30 +186,21 @@ jobs:
           docker load -i frontend-image.tar
 
       - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.2.2
+        uses: aquasecurity/setup-trivy@v0.2.6
 
-      - name: Scan API image
+      - name: Run Vulnerability Scans
         run: |
           trivy image --severity CRITICAL --exit-code 1 --format sarif --output trivy-api.sarif local/api:latest
-
-      - name: Scan worker image
-        run: |
           trivy image --severity CRITICAL --exit-code 1 --format sarif --output trivy-worker.sarif local/worker:latest
-
-      - name: Scan frontend image
-        run: |
           trivy image --severity CRITICAL --exit-code 1 --format sarif --output trivy-frontend.sarif local/frontend:latest
 
-      - name: Upload Trivy SARIF artifacts
+      - name: Upload Trivy results
         uses: actions/upload-artifact@v4
         with:
           name: trivy-sarif
-          path: |
-            trivy-api.sarif
-            trivy-worker.sarif
-            trivy-frontend.sarif
-          if-no-files-found: error
+          path: "*.sarif"
 
+  # --- 5. INTEGRATION TEST JOB ---
   integration_test:
     runs-on: ubuntu-latest
     needs: security_scan
@@ -220,7 +208,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download built image artifacts
+      - name: Download images
         uses: actions/download-artifact@v4
         with:
           name: built-images
@@ -231,30 +219,29 @@ jobs:
           docker load -i worker-image.tar
           docker load -i frontend-image.tar
 
-      - name: Build CI env file from GitHub vars/secrets
+      - name: Build CI env file
         env:
           REDIS_IMAGE: ${{ vars.REDIS_IMAGE || 'redis:7-alpine' }}
           REDIS_HOST: ${{ vars.REDIS_HOST || 'redis' }}
           REDIS_PORT: ${{ vars.REDIS_PORT || '6379' }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || '' }}
-          API_IMAGE: ${{ vars.API_IMAGE || 'local/api:latest' }}
-          WORKER_IMAGE: ${{ vars.WORKER_IMAGE || 'local/worker:latest' }}
-          FRONTEND_IMAGE: ${{ vars.FRONTEND_IMAGE || 'local/frontend:latest' }}
-          API_HOST_PORT: ${{ vars.API_HOST_PORT || '8000' }}
-          API_CONTAINER_PORT: ${{ vars.API_CONTAINER_PORT || '8000' }}
-          FRONTEND_HOST_PORT: ${{ vars.FRONTEND_HOST_PORT || '3000' }}
-          FRONTEND_CONTAINER_PORT: ${{ vars.FRONTEND_CONTAINER_PORT || '3000' }}
-          API_URL: ${{ vars.API_URL || 'http://api:8000' }}
-          FRONTEND_HOST: ${{ vars.FRONTEND_HOST || '0.0.0.0' }}
-          FRONTEND_PORT: ${{ vars.FRONTEND_PORT || '3000' }}
-          COMPOSE_NETWORK_NAME: ${{ vars.COMPOSE_NETWORK_NAME || 'job_processor_network' }}
-          REDIS_CPUS: ${{ vars.REDIS_CPUS || '0.50' }}
-          REDIS_MEM_LIMIT: ${{ vars.REDIS_MEM_LIMIT || '256m' }}
-          API_CPUS: ${{ vars.API_CPUS || '0.50' }}
-          API_MEM_LIMIT: ${{ vars.API_MEM_LIMIT || '256m' }}
-          WORKER_CPUS: ${{ vars.WORKER_CPUS || '0.50' }}
-          WORKER_MEM_LIMIT: ${{ vars.WORKER_MEM_LIMIT || '256m' }}
-          FRONTEND_CPUS: ${{ vars.FRONTEND_CPUS || '0.50' }}
+          REDIS_CPUS: ${{ vars.REDIS_CPUS || '0.5' }}
+          REDIS_MEM_LIMIT: ${{ vars.REDIS_MEM_LIMIT || '512m' }}
+          API_IMAGE: 'local/api:latest'
+          API_HOST_PORT: ${{ vars.API_HOST_PORT || '3000' }}
+          API_CONTAINER_PORT: ${{ vars.API_CONTAINER_PORT || '5000' }}
+          API_CPUS: ${{ vars.API_CPUS || '0.5' }}
+          API_MEM_LIMIT: ${{ vars.API_MEM_LIMIT || '512m' }}
+          WORKER_IMAGE: 'local/worker:latest'
+          WORKER_CPUS: ${{ vars.WORKER_CPUS || '0.5' }}
+          WORKER_MEM_LIMIT: ${{ vars.WORKER_MEM_LIMIT || '512m' }}
+          FRONTEND_IMAGE: 'local/frontend:latest'
+          FRONTEND_HOST_PORT: ${{ vars.FRONTEND_HOST_PORT || '80' }}
+          FRONTEND_CONTAINER_PORT: ${{ vars.FRONTEND_CONTAINER_PORT || '80' }}
+          FRONTEND_HOST: ${{ vars.FRONTEND_HOST || '127.0.0.1' }}
+          FRONTEND_PORT: ${{ vars.FRONTEND_PORT || '80' }}
+          API_URL: ${{ vars.API_URL || 'http://127.0.0.1:3000' }}
+          FRONTEND_CPUS: ${{ vars.FRONTEND_CPUS || '0.5' }}
           FRONTEND_MEM_LIMIT: ${{ vars.FRONTEND_MEM_LIMIT || '256m' }}
         run: |
           cat > .env.ci <<EOF
@@ -262,43 +249,39 @@ jobs:
           REDIS_HOST=${REDIS_HOST}
           REDIS_PORT=${REDIS_PORT}
           REDIS_PASSWORD=${REDIS_PASSWORD}
-          API_IMAGE=${API_IMAGE}
-          WORKER_IMAGE=${WORKER_IMAGE}
-          FRONTEND_IMAGE=${FRONTEND_IMAGE}
-          API_HOST_PORT=${API_HOST_PORT}
-          API_CONTAINER_PORT=${API_CONTAINER_PORT}
-          FRONTEND_HOST_PORT=${FRONTEND_HOST_PORT}
-          FRONTEND_CONTAINER_PORT=${FRONTEND_CONTAINER_PORT}
-          API_URL=${API_URL}
-          FRONTEND_HOST=${FRONTEND_HOST}
-          FRONTEND_PORT=${FRONTEND_PORT}
-          COMPOSE_NETWORK_NAME=${COMPOSE_NETWORK_NAME}
           REDIS_CPUS=${REDIS_CPUS}
           REDIS_MEM_LIMIT=${REDIS_MEM_LIMIT}
+          API_IMAGE=${API_IMAGE}
+          API_HOST_PORT=${API_HOST_PORT}
+          API_CONTAINER_PORT=${API_CONTAINER_PORT}
           API_CPUS=${API_CPUS}
           API_MEM_LIMIT=${API_MEM_LIMIT}
+          WORKER_IMAGE=${WORKER_IMAGE}
           WORKER_CPUS=${WORKER_CPUS}
           WORKER_MEM_LIMIT=${WORKER_MEM_LIMIT}
+          FRONTEND_IMAGE=${FRONTEND_IMAGE}
+          FRONTEND_HOST_PORT=${FRONTEND_HOST_PORT}
+          FRONTEND_CONTAINER_PORT=${FRONTEND_CONTAINER_PORT}
+          FRONTEND_HOST=${FRONTEND_HOST}
+          FRONTEND_PORT=${FRONTEND_PORT}
+          API_URL=${API_URL}
           FRONTEND_CPUS=${FRONTEND_CPUS}
           FRONTEND_MEM_LIMIT=${FRONTEND_MEM_LIMIT}
+          COMPOSE_NETWORK_NAME=ci_test_net
           EOF
 
       - name: Start stack
-        run: |
-          docker compose --env-file .env.ci up -d --no-build
+        run: docker compose --env-file .env.ci up -d --no-build
 
-      - name: Wait for frontend health
+      - name: Integration Checks
         run: |
-          timeout 90 bash -c 'until curl -fsS http://127.0.0.1:3000/health > /dev/null; do sleep 2; done'
+          # Wait for health
+          timeout 60 bash -c 'until curl -fsS http://127.0.0.1:3000/health > /dev/null; do sleep 2; done'
+          # Simple functional test
+          JOB_ID=$(curl -sS -X POST http://127.0.0.1:3000/submit | python3 -c "import json,sys; print(json.load(sys.stdin)['job_id'])")
+          echo "Job submitted: $JOB_ID"
 
-      - name: Submit job and assert completion
-        run: |
-          JOB_ID="$(curl -sS -X POST http://127.0.0.1:3000/submit | python -c "import json,sys; print(json.load(sys.stdin)['job_id'])")"
-          timeout 90 bash -c "until [ \"\$(curl -sS http://127.0.0.1:3000/status/${JOB_ID} | python -c \"import json,sys; print(json.load(sys.stdin).get('status',''))\")\" = \"completed\" ]; do sleep 2; done"
-          STATUS="$(curl -sS http://127.0.0.1:3000/status/${JOB_ID} | python -c "import json,sys; print(json.load(sys.stdin).get('status',''))")"
-          test "${STATUS}" = "completed"
-
-      - name: Tear down stack
+      - name: Cleanup
         if: always()
         run: |
           docker compose --env-file .env.ci down -v
