@@ -37,7 +37,7 @@ app.get('/status/:id', async (req, res) => {
     const response = await axios.get(`${API_URL}/jobs/${req.params.id}`);
     res.json(response.data);
   } catch (err) {
-    console.error(`Error occured while calling req with id: ${id}`)
+    console.error(`Error occured while calling req with id: ${req.params.id}  ${err}`)
     res.status(500).json({ error: 'something went wrong' });
   }
 });
