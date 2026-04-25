@@ -42,7 +42,7 @@ jobs:
       - name: Lint JavaScript
         working-directory: frontend
         run: npm run lint
-        
+
       - name: Lint API Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
@@ -186,7 +186,7 @@ jobs:
           docker load -i frontend-image.tar
 
       - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.2.2
+        uses: aquasecurity/setup-trivy@v0.2.6
 
       - name: Run Vulnerability Scans
         run: |
