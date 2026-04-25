@@ -10,8 +10,15 @@ on:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
     runs-on: ubuntu-latest
+
+    # ✅ FIX: make secrets available safely for if: expressions
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,14 +34,18 @@ jobs:
           API_IMAGE: ${{ vars.API_IMAGE || 'local/api:latest' }}
           WORKER_IMAGE: ${{ vars.WORKER_IMAGE || 'local/worker:latest' }}
           FRONTEND_IMAGE: ${{ vars.FRONTEND_IMAGE || 'local/frontend:latest' }}
+
           API_HOST_PORT: ${{ vars.API_HOST_PORT || '8000' }}
           API_CONTAINER_PORT: ${{ vars.API_CONTAINER_PORT || '8000' }}
           FRONTEND_HOST_PORT: ${{ vars.FRONTEND_HOST_PORT || '3000' }}
           FRONTEND_CONTAINER_PORT: ${{ vars.FRONTEND_CONTAINER_PORT || '3000' }}
+
           API_URL: ${{ vars.API_URL || 'http://api:8000' }}
           FRONTEND_HOST: ${{ vars.FRONTEND_HOST || '0.0.0.0' }}
           FRONTEND_PORT: ${{ vars.FRONTEND_PORT || '3000' }}
+
           COMPOSE_NETWORK_NAME: ${{ vars.COMPOSE_NETWORK_NAME || 'job_processor_network' }}
+
           REDIS_CPUS: ${{ vars.REDIS_CPUS || '0.50' }}
           REDIS_MEM_LIMIT: ${{ vars.REDIS_MEM_LIMIT || '256m' }}
           API_CPUS: ${{ vars.API_CPUS || '0.50' }}
@@ -43,23 +54,29 @@ jobs:
           WORKER_MEM_LIMIT: ${{ vars.WORKER_MEM_LIMIT || '256m' }}
           FRONTEND_CPUS: ${{ vars.FRONTEND_CPUS || '0.50' }}
           FRONTEND_MEM_LIMIT: ${{ vars.FRONTEND_MEM_LIMIT || '256m' }}
+
         run: |
           cat > .env.cd <<EOF
           REDIS_IMAGE=${REDIS_IMAGE}
           REDIS_HOST=${REDIS_HOST}
           REDIS_PORT=${REDIS_PORT}
           REDIS_PASSWORD=${REDIS_PASSWORD}
+
           API_IMAGE=${API_IMAGE}
           WORKER_IMAGE=${WORKER_IMAGE}
           FRONTEND_IMAGE=${FRONTEND_IMAGE}
+
           API_HOST_PORT=${API_HOST_PORT}
           API_CONTAINER_PORT=${API_CONTAINER_PORT}
           FRONTEND_HOST_PORT=${FRONTEND_HOST_PORT}
           FRONTEND_CONTAINER_PORT=${FRONTEND_CONTAINER_PORT}
+
           API_URL=${API_URL}
           FRONTEND_HOST=${FRONTEND_HOST}
           FRONTEND_PORT=${FRONTEND_PORT}
+
           COMPOSE_NETWORK_NAME=${COMPOSE_NETWORK_NAME}
+
           REDIS_CPUS=${REDIS_CPUS}
           REDIS_MEM_LIMIT=${REDIS_MEM_LIMIT}
           API_CPUS=${API_CPUS}
@@ -70,11 +87,9 @@ jobs:
           FRONTEND_MEM_LIMIT=${FRONTEND_MEM_LIMIT}
           EOF
 
+      # ✅ FIXED: now env works properly in if:
       - name: Login to Docker Hub
         if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
 
